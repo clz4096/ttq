@@ -1,0 +1,21 @@
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+build/
+*.cmake
+!CMakeLists.txt
+
+# Binaries
+*.o
+*.out
+*.exe
+test_spsc
+test
+accelerator_sim
+perf.data
+
+# IDE
+.vscode/
+.idea/
