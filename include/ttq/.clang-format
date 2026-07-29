@@ -1,0 +1,13 @@
+BasedOnStyle: WebKit
+ColumnLimit: 120
+AlignAfterOpenBracket: AlwaysBreak
+BinPackParameters: false
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: Never
+  AfterClass: false
+  AfterNamespace: false
+  AfterStruct: false
+  BeforeElse: false
+  BeforeCatch: false

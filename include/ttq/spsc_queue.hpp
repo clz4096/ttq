@@ -51,10 +51,10 @@
 //    update. relaxed is fine for reading the index you alone own."
 // ---------------------------------------------------------------------------
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <optional>
-#include <array>
 
 namespace ttq {
 
@@ -66,8 +66,7 @@ namespace ttq {
 //   (a) waste one slot: buffer holds Capacity-1 items; full == next(tail)==head
 //   (b) free-running counters + masking: full == (tail_ - head_ == Capacity)
 // You will pick one when you implement. The signatures below work for either.
-template <typename T, std::size_t Capacity>
-class SPSCQueue {
+template <typename T, std::size_t Capacity> class SPSCQueue {
     static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be a power of two");
 
 public:
@@ -80,25 +79,29 @@ public:
     // Called ONLY by the producer thread.
     // Returns false if the queue is full (item NOT stored).
     // TODO(you): implement.
-    bool push(const T& item) {
+    bool push(const T& item)
+    {
         auto t = tail_.load(std::memory_order_relaxed);
         auto h = head_.load(std::memory_order_acquire);
 
-        if ((t - h) == capacity() ) return false;
+        if ((t - h) == capacity())
+            return false;
 
         buffer_[mask(t)] = item;
-        tail_.store( t + 1, std::memory_order_release);
+        tail_.store(t + 1, std::memory_order_release);
         return true;
     }
 
     // Called ONLY by the consumer thread.
     // Returns std::nullopt if the queue is empty.
     // TODO(you): implement.
-    std::optional<T> pop() {
+    std::optional<T> pop()
+    {
         auto t = tail_.load(std::memory_order_acquire);
         auto h = head_.load(std::memory_order_relaxed);
 
-        if (t - h == 0) return std::nullopt;
+        if (t - h == 0)
+            return std::nullopt;
         auto item = buffer_[mask(h)];
         head_.store(h + 1, std::memory_order_release);
 
@@ -108,25 +111,26 @@ public:
     // Approximate size. Safe to call from either thread but the value may be
     // stale the instant it returns (that's fine — it's for tests/metrics).
     // TODO(you): implement.
-    std::size_t size_approx() const {
-        auto t = tail_.load(std::memory_order_relaxed);        
+    std::size_t size_approx() const
+    {
+        auto t = tail_.load(std::memory_order_relaxed);
         auto h = head_.load(std::memory_order_relaxed);
 
         return t - h;
     }
 
     static constexpr std::size_t capacity() { return Capacity; }
-    static constexpr std::size_t mask(std::size_t idx) { return idx & (capacity() - 1 ); }
+    static constexpr std::size_t mask(std::size_t idx) { return idx & (capacity() - 1); }
 
 private:
     // Storage. One entry per slot.
-    std::array<T, Capacity> buffer_{};
+    std::array<T, Capacity> buffer_ {};
 
     // Consumer's index. Consumer writes it (release), producer reads it (acquire).
-    std::atomic<std::size_t> head_{0};
+    std::atomic<std::size_t> head_ { 0 };
 
     // Producer's index. Producer writes it (release), consumer reads it (acquire).
-    std::atomic<std::size_t> tail_{0};
+    std::atomic<std::size_t> tail_ { 0 };
 
     // Optional helper you may or may not want depending on which full/empty
     // scheme you choose:
