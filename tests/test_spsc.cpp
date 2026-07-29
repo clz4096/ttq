@@ -1,9 +1,7 @@
-// Minimal test harness (no external deps) for ttq::SPSCQueue.
-// Build via CMake, run ./test_spsc. Exit code 0 = all passed.
-//
-// Your job tonight: implement push/pop/size_approx in the header until every
-// check below prints PASS. Start with the single-threaded ones; do the
-// threaded stress test last (it will catch memory-ordering bugs).
+// Small test harness for ttq::SPSCQueue, no external deps.
+// Build with CMake, run ./test_spsc — exit code 0 means everything passed.
+// The threaded stress test runs last on purpose: it's the one that catches
+// memory-ordering bugs.
 
 #include "ttq/spsc_queue.hpp"
 
@@ -35,10 +33,9 @@ static void test_basic_push_pop() {
 }
 
 static void test_fill_and_full() {
-  // Capacity 4. Depending on your full/empty scheme you can store either
-  // 3 or 4 items. This test only assumes you can store at least 3 and that
-  // push eventually returns false when full. Adjust the expected count to
-  // match the scheme you choose, and delete this comment when you do.
+  // Capacity 4 with free-running counters, so all 4 slots are usable. I just
+  // check I can store at least capacity-1 and that push returns false once
+  // full.
   ttq::SPSCQueue<int, 4> q;
   int stored = 0;
   while (q.push(stored))
@@ -64,8 +61,9 @@ static void test_wraparound() {
 }
 
 static void test_threaded_stress() {
-  // One producer, one consumer, N items. Verify none lost, none duplicated,
-  // strict FIFO. This is the test that fails if your acquire/release is wrong.
+  // One producer, one consumer, N items. Checks nothing's lost, nothing's
+  // duplicated, strict FIFO. If my acquire/release is wrong, this is what
+  // trips.
   constexpr int N = 1'000'000;
   ttq::SPSCQueue<std::uint64_t, 1024> q;
 
