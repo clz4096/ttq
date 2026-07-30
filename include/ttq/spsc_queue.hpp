@@ -57,10 +57,13 @@ public:
     bool push(const T& item)
     {
         auto t = tail_.load(std::memory_order_relaxed);
-        auto h = head_.load(std::memory_order_acquire);
 
-        if ((t - h) == capacity())
-            return false;
+        // Re-read the consumer's index only when the cached copy says we're full.
+        if (t - head_cache_ == capacity()) {
+            head_cache_ = head_.load(std::memory_order_acquire);
+            if (t - head_cache_ == capacity())
+                return false;
+        }
 
         buffer_[mask(t)] = item;
         tail_.store(t + 1, std::memory_order_release);
@@ -70,11 +73,15 @@ public:
     // Consumer thread only. Returns nullopt if the queue is empty.
     std::optional<T> pop()
     {
-        auto t = tail_.load(std::memory_order_acquire);
         auto h = head_.load(std::memory_order_relaxed);
 
-        if (t - h == 0)
-            return std::nullopt;
+        // Re-read the producer's index only when the cached copy says we're empty.
+        if (h == tail_cache_) {
+            tail_cache_ = tail_.load(std::memory_order_acquire);
+            if (h == tail_cache_)
+                return std::nullopt;
+        }
+
         auto item = buffer_[mask(h)];
         head_.store(h + 1, std::memory_order_release);
 
@@ -111,13 +118,22 @@ private:
     // Storage. One entry per slot.
     std::array<T, Capacity> buffer_ {};
 
-    // head_ and tail_ sit on separate cache lines. The producer writes tail_ and
-    // reads head_; the consumer writes head_ and reads tail_. If the two shared a
-    // line, every push and pop would bounce that line between the two cores (false
-    // sharing) and stall. The alignment also keeps both indices off buffer_'s last
-    // line.
+    // head_ and tail_ sit on separate cache lines (see kCacheLine) so the two
+    // threads don't keep bouncing one shared line between cores. Each index also
+    // shares its line with a cached copy of the *other* index that only its owner
+    // touches:
+    //   head_ + tail_cache_  -> consumer's line
+    //   tail_ + head_cache_  -> producer's line
+    // Those caches let push and pop skip reading the other thread's index most of
+    // the time: push re-reads head_ only when the cache says full, pop re-reads
+    // tail_ only when it says empty. A cache is always behind the real index (which
+    // only moves forward), so trusting it is safe, and the acquire load that
+    // refills it carries the ordering the next operations rely on.
     alignas(kCacheLine) std::atomic<std::size_t> head_ { 0 };
+    std::size_t tail_cache_ { 0 };
+
     alignas(kCacheLine) std::atomic<std::size_t> tail_ { 0 };
+    std::size_t head_cache_ { 0 };
 };
 
 } // namespace ttq
