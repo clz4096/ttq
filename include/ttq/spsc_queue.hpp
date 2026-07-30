@@ -95,14 +95,29 @@ public:
     static constexpr std::size_t mask(std::size_t idx) { return idx & (capacity() - 1); }
 
 private:
+    // Cache-line size, used just below to keep the two indices on separate lines.
+    // std::hardware_destructive_interference_size would do this, but its value can
+    // change between builds, which could give this type different layouts in
+    // different files, so use a plain constant. gcc warns about the same thing
+    // (-Winterference-size); background:
+    // https://en.cppreference.com/w/cpp/thread/hardware_destructive_interference_size
+    // 128 on Apple silicon, 64 otherwise.
+#if defined(__APPLE__) && defined(__aarch64__)
+    static constexpr std::size_t kCacheLine = 128;
+#else
+    static constexpr std::size_t kCacheLine = 64;
+#endif
+
     // Storage. One entry per slot.
     std::array<T, Capacity> buffer_ {};
 
-    // Consumer's index. Consumer writes it (release), producer reads it (acquire).
-    std::atomic<std::size_t> head_ { 0 };
-
-    // Producer's index. Producer writes it (release), consumer reads it (acquire).
-    std::atomic<std::size_t> tail_ { 0 };
+    // head_ and tail_ sit on separate cache lines. The producer writes tail_ and
+    // reads head_; the consumer writes head_ and reads tail_. If the two shared a
+    // line, every push and pop would bounce that line between the two cores (false
+    // sharing) and stall. The alignment also keeps both indices off buffer_'s last
+    // line.
+    alignas(kCacheLine) std::atomic<std::size_t> head_ { 0 };
+    alignas(kCacheLine) std::atomic<std::size_t> tail_ { 0 };
 };
 
 } // namespace ttq
