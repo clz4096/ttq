@@ -8,7 +8,9 @@
 #include <atomic>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static int g_failures = 0;
@@ -99,11 +101,84 @@ static void test_threaded_stress()
     CHECK(expected == static_cast<std::uint64_t>(N));
 }
 
+// Counts every construction and destruction so a test can prove the queue builds
+// and tears down each element exactly once. It has no default constructor on
+// purpose: the queue must not require one.
+struct LifetimeProbe {
+    struct Counts {
+        int constructed = 0;
+        int destroyed = 0;
+    };
+    Counts* counts;
+    int value;
+
+    LifetimeProbe(Counts* c, int v)
+        : counts(c)
+        , value(v)
+    {
+        ++counts->constructed;
+    }
+    LifetimeProbe(const LifetimeProbe& o)
+        : counts(o.counts)
+        , value(o.value)
+    {
+        ++counts->constructed;
+    }
+    LifetimeProbe(LifetimeProbe&& o) noexcept
+        : counts(o.counts)
+        , value(o.value)
+    {
+        ++counts->constructed;
+    }
+    ~LifetimeProbe() { ++counts->destroyed; }
+};
+
+static void test_lifetime()
+{
+    // Every element the queue holds must be destroyed exactly once: on pop, and
+    // for whatever is left, in the destructor. Balanced counts prove no leaks and
+    // no double-frees. LifetimeProbe has no default constructor, so a clean build
+    // also proves the queue does not require one.
+    LifetimeProbe::Counts counts;
+    {
+        ttq::SPSCQueue<LifetimeProbe, 8> q;
+        for (int i = 0; i < 5; ++i)
+            CHECK(q.emplace(&counts, i)); // construct in place, no copy
+
+        int destroyed_before = counts.destroyed;
+        for (int i = 0; i < 3; ++i) {
+            auto v = q.pop();
+            CHECK(v.has_value() && v->value == i);
+        }
+        CHECK(counts.destroyed > destroyed_before); // pop destroys as it goes
+        // Two elements are left in the queue; the destructor should drain them.
+    }
+    CHECK(counts.constructed == counts.destroyed); // every ctor matched by one dtor
+    CHECK(counts.constructed > 0);
+}
+
+static void test_move_only()
+{
+    // A move-only element (unique_ptr) would not compile against a queue that
+    // copies. push(T&&) and emplace must move it through instead.
+    ttq::SPSCQueue<std::unique_ptr<int>, 4> q;
+    CHECK(q.push(std::make_unique<int>(7))); // rvalue -> push(T&&)
+    CHECK(q.emplace(new int(9))); // emplace forwards args to unique_ptr(int*)
+
+    auto a = q.pop();
+    CHECK(a.has_value() && **a == 7);
+    auto b = q.pop();
+    CHECK(b.has_value() && **b == 9);
+    CHECK(!q.pop().has_value());
+}
+
 int main()
 {
     test_basic_push_pop();
     test_fill_and_full();
     test_wraparound();
+    test_lifetime();
+    test_move_only();
     test_threaded_stress();
     if (g_failures == 0) {
         std::cout << "\nALL TESTS PASSED\n";
