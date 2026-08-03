@@ -33,7 +33,9 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <optional>
+#include <utility>
 
 namespace ttq {
 
@@ -49,12 +51,26 @@ template <typename T, std::size_t Capacity> class SPSCQueue {
 public:
     SPSCQueue() = default;
 
+    // Destroy whatever is still queued. Slots outside [head_, tail_) were never
+    // constructed (or were already destroyed on pop), so only live ones are
+    // touched. Runs single-threaded at end of life, so relaxed loads are fine.
+    ~SPSCQueue()
+    {
+        auto h = head_.load(std::memory_order_relaxed);
+        auto t = tail_.load(std::memory_order_relaxed);
+        for (; h != t; ++h)
+            std::destroy_at(slot(h));
+    }
+
     // non-copyable, non-movable: it's a shared channel, aliasing it is a bug.
     SPSCQueue(const SPSCQueue&) = delete;
     SPSCQueue& operator=(const SPSCQueue&) = delete;
 
-    // Producer thread only. Returns false if the queue is full (item not stored).
-    bool push(const T& item)
+    // Producer thread only. Construct an element in place from args, straight
+    // into the slot's storage. Returns false if the queue is full (nothing
+    // constructed). T needs neither a default constructor nor to be copyable.
+    template <typename... Args>
+    bool emplace(Args&&... args)
     {
         auto t = tail_.load(std::memory_order_relaxed);
 
@@ -65,10 +81,16 @@ public:
                 return false;
         }
 
-        buffer_[mask(t)] = item;
+        // Construct before publishing the new tail_: if the constructor throws,
+        // tail_ hasn't moved and the queue is left unchanged.
+        std::construct_at(slot(t), std::forward<Args>(args)...);
         tail_.store(t + 1, std::memory_order_release);
         return true;
     }
+
+    // Producer thread only. Returns false if the queue is full (item not stored).
+    bool push(const T& item) { return emplace(item); }
+    bool push(T&& item) { return emplace(std::move(item)); }
 
     // Consumer thread only. Returns nullopt if the queue is empty.
     std::optional<T> pop()
@@ -82,10 +104,14 @@ public:
                 return std::nullopt;
         }
 
-        auto item = buffer_[mask(h)];
+        // Move the element out, destroy the slot, then publish the free slot by
+        // advancing head_. The destroy happens before head_ is released, so the
+        // producer can't reuse the slot until we're done with it.
+        T* p = slot(h);
+        std::optional<T> out(std::move(*p));
+        std::destroy_at(p);
         head_.store(h + 1, std::memory_order_release);
-
-        return item;
+        return out;
     }
 
     // Rough size — safe to call from either thread, but it can be stale the instant
@@ -115,8 +141,21 @@ private:
     static constexpr std::size_t kCacheLine = 64;
 #endif
 
-    // Storage. One entry per slot.
-    std::array<T, Capacity> buffer_ {};
+    // Raw, uninitialized storage for one T per slot. The single-member union
+    // gives correctly sized and aligned space for a T without constructing one:
+    // the do-nothing Slot() leaves it empty, and ~Slot() does nothing either, so
+    // the T's lifetime is entirely ours to manage (construct on push, destroy on
+    // pop, drain the rest in ~SPSCQueue).
+    union Slot {
+        Slot() { }
+        ~Slot() { }
+        T value;
+    };
+    std::array<Slot, Capacity> buffer_;
+
+    // Address of slot i's storage. Safe to hand to std::construct_at; safe to
+    // read once that slot has been constructed.
+    T* slot(std::size_t i) { return &buffer_[mask(i)].value; }
 
     // head_ and tail_ sit on separate cache lines (see kCacheLine) so the two
     // threads don't keep bouncing one shared line between cores. Each index also
